@@ -1,0 +1,45 @@
+name: Notify Alex on task assignment
+
+on:
+  repository_dispatch:
+    types: [ado_task_assigned]
+
+jobs:
+  notify-alex:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Fetch task from Azure DevOps using Mathew's PAT
+        id: fetch_task
+        run: |
+          PAT="${{ secrets.MATHEW_ADO_PAT }}"
+          ENCODED_PAT=$(echo -n ":$PAT" | base64)
+          PROJECT_URL="${{ github.event.client_payload.project_url }}"
+          WORK_ITEM_ID="${{ github.event.client_payload.work_item_id }}"
+
+          RESPONSE=$(curl -s -X GET \
+            "${PROJECT_URL}/_apis/wit/workitems/${WORK_ITEM_ID}?api-version=7.1" \
+            -H "Authorization: Basic ${ENCODED_PAT}" \
+            -H "Content-Type: application/json")
+
+          TITLE=$(echo $RESPONSE | python3 -c \
+            "import sys,json; d=json.load(sys.stdin); print(d['fields']['System.Title'])")
+          STATE=$(echo $RESPONSE | python3 -c \
+            "import sys,json; d=json.load(sys.stdin); print(d['fields']['System.State'])")
+          ASSIGNED_TO=$(echo $RESPONSE | python3 -c \
+            "import sys,json; d=json.load(sys.stdin); print(d['fields']['System.AssignedTo']['displayName'])")
+
+          echo "title=${TITLE}" >> $GITHUB_OUTPUT
+          echo "state=${STATE}" >> $GITHUB_OUTPUT
+          echo "assigned_to=${ASSIGNED_TO}" >> $GITHUB_OUTPUT
+          echo "work_item_id=${WORK_ITEM_ID}" >> $GITHUB_OUTPUT
+
+      - name: SSH into VM and notify Alex via Openclaw
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            openclaw agent --agent main \
+              --message "New Azure DevOps task assigned to Mathew. Work Item ID: ${{ steps.fetch_task.outputs.work_item_id }}, Title: ${{ steps.fetch_task.outputs.title }}, State: ${{ steps.fetch_task.outputs.state }}, Assigned To: ${{ steps.fetch_task.outputs.assigned_to }}. Please read and confirm."
